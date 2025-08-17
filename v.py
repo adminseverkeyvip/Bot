@@ -1,286 +1,3 @@
-import base64
-import os
-import time
-import json
-import random
-import requests
-import sys
-import uuid
-from time import sleep
-from datetime import datetime, timedelta
-import string 
-import platform
-import socket
-
-# ==== GitHub Config ====
-GITHUB_USER = "adminseverkeyvip"
-GITHUB_REPO = "key"
-GITHUB_BRANCH = "main"
-GITHUB_TOKEN = "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"
-GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_USER}/{GITHUB_REPO}/contents/keys.json"
-GITHUB_SERVER_FILE = f"https://api.github.com/repos/{GITHUB_USER}/{GITHUB_REPO}/contents/server.json"
-
-# ==== Base64 encrypt/decrypt local backup ====
-def encrypt_data(data):
-    return base64.b64encode(data.encode()).decode()
-
-def decrypt_data(encrypted_data):
-    return base64.b64decode(encrypted_data.encode()).decode()
-
-# ==== Lấy Device ID cố định và thông tin máy ====
-def get_fixed_device_id():
-    """Nếu đã lưu, đọc từ file; nếu chưa, tạo mới và lưu."""
-    file_path = 'device_info.json'
-    if os.path.exists(file_path):
-        try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                info = json.load(f)
-                return info['device_id'], info['machine_name'], info['platform']
-        except:
-            pass
-
-    # Tạo Device ID mới
-    device_id = str(uuid.getnode())
-    machine_name = platform.node()  # Tên máy
-    machine_platform = f"{platform.system()} {platform.release()}"  # Windows/Linux/Mac
-    info = {
-        'device_id': device_id,
-        'machine_name': machine_name,
-        'platform': machine_platform
-    }
-    with open(file_path, 'w', encoding='utf-8') as f:
-        json.dump(info, f, indent=2)
-    return device_id, machine_name, machine_platform
-
-def display_device_info(device_id, machine_name, machine_platform):
-    print(f"\033[1;97m[\033[1;91m<>\033[1;97m] \033[1;31mID Thiết Bị: {device_id}")
-    print(f"\033[1;97m[\033[1;91m<>\033[1;97m] \033[1;36mTên máy: {machine_name}")
-    print(f"\033[1;97m[\033[1;91m<>\033[1;97m] \033[1;32mHệ điều hành: {machine_platform}")
-
-# ==== Lưu/Load key local ====
-def luu_thong_tin_device(device_id, key, expiration_date):
-    data = {device_id: {'key': key, 'expiration_date': expiration_date.isoformat()}}
-    encrypted_data = encrypt_data(json.dumps(data))
-    with open('device_key.json', 'w', encoding='utf-8') as file:
-        file.write(encrypted_data)
-
-def tai_thong_tin_device():
-    try:
-        with open('device_key.json', 'r', encoding='utf-8') as file:
-            return json.loads(decrypt_data(file.read()))
-    except:
-        return None
-
-def kiem_tra_device(device_id):
-    data = tai_thong_tin_device()
-    if data and device_id in data:
-        exp = datetime.fromisoformat(data[device_id]['expiration_date'])
-        if exp > datetime.now():
-            return data[device_id]['key']
-    return None
-
-# ==== GitHub API ====
-def github_get_keys():
-    headers = {"Authorization": f"token {GITHUB_TOKEN}"}
-    r = requests.get(GITHUB_API_URL, headers=headers)
-    if r.status_code == 200:
-        content = r.json().get("content")
-        if content:
-            try:
-                return json.loads(base64.b64decode(content).decode())
-            except:
-                return {}
-    return {}
-
-def github_update_keys(data, message="Update keys"):
-    headers = {"Authorization": f"token {GITHUB_TOKEN}"}
-    content_encoded = base64.b64encode(json.dumps(data, indent=2).encode()).decode()
-    r = requests.get(GITHUB_API_URL, headers=headers)
-    sha = r.json().get("sha") if r.status_code == 200 else None
-    payload = {
-        "message": message,
-        "content": content_encoded,
-        "branch": GITHUB_BRANCH
-    }
-    if sha:
-        payload["sha"] = sha
-    r = requests.put(GITHUB_API_URL, headers=headers, json=payload)
-    return r.status_code in (200, 201)
-
-# ==== Lấy key all từ GitHub ====
-def get_global_free_key():
-    keys = github_get_keys()
-    if isinstance(keys, dict) and "all" in keys:
-        try:
-            exp = datetime.fromisoformat(keys["all"]["expiration_date"])
-            if exp > datetime.now():
-                return keys["all"]["key"].strip()
-        except:
-            pass
-    return None
-
-# ==== Tạo key free cho device ====
-def generate_free_key():
-    random_part = ''.join(random.choices(string.ascii_uppercase + string.digits, k=10))
-    key = f'KeyFree-{random_part}'
-    expiration_date = datetime.now().replace(hour=23, minute=59, second=0, microsecond=0)
-    url = f'https://www.webkey.x10.mx/?ma={key}'
-    return url, key, expiration_date
-
-# ==== Server check ====
-def github_get_server_info():
-    headers = {"Authorization": f"token {GITHUB_TOKEN}"}
-    try:
-        r = requests.get(GITHUB_SERVER_FILE, headers=headers, timeout=8)
-        if r.status_code == 200:
-            content = r.json().get("content")
-            if content:
-                decoded = base64.b64decode(content).decode()
-                return json.loads(decoded)
-    except Exception as e:
-        print(f"Lỗi khi lấy server info: {e}")
-    return None
-
-def check_server_status():
-    server_info = github_get_server_info()
-    if not server_info:
-        return
-
-    status = server_info.get("status", "")
-
-    if "Sever Bảo Trì Vĩnh Viễn" in status:
-        print("\033[1;91m⚠ Tool đang bị bảo trì vĩnh viễn! Tool sẽ không chạy nữa.")
-        if os.path.exists(sys.argv[0]):
-            os.remove(sys.argv[0])
-        exit()
-
-    if status.startswith("Tool :"):
-        date_str = status.split("Tool :")[-1].strip()
-        try:
-            update_date = datetime.strptime(date_str, "%d-%m-%Y")
-            if datetime.now() >= update_date:
-                print(f"\033[1;93m⚠ Tool đã hết hạn sử dụng từ ngày {date_str}. Tool sẽ bị xóa!")
-                if os.path.exists(sys.argv[0]):
-                    os.remove(sys.argv[0])
-                exit()
-            else:
-                print(f"\033[1;92m✅ Tool vẫn còn hạn sử dụng đến {date_str}.")
-        except:
-            print("⚠ Lỗi định dạng ngày trong server.json, tool vẫn chạy bình thường.")
-
-# ==== Rút gọn link ====
-def get_shortened_link_phu(url):
-    try:
-        token = "67cfdd9135fa313c8c20c795"
-        api_url = f"https://link2m.net/api-shorten/v2?api={token}&url={url}"
-        response = requests.get(api_url, timeout=8)
-        if response.status_code == 200:
-            return response.json()
-        else:
-            return {"status": "error", "message": "Không thể kết nối đến dịch vụ rút gọn URL."}
-    except Exception as e:
-        return {"status": "error", "message": f"Lỗi khi rút gọn URL: {e}"}
-
-# ==== Main ====
-# ==== Main mới với auto nhận key từ server ====
-def main():
-    # Lấy Device ID cố định và info máy
-    device_id, machine_name, machine_platform = get_fixed_device_id()
-    display_device_info(device_id, machine_name, machine_platform)
-
-    # Kiểm tra server
-    check_server_status()
-
-    # Lấy keys từ GitHub
-    keys_data = github_get_keys()
-    if not isinstance(keys_data, dict):
-        keys_data = {}
-
-    # 1. Kiểm tra key chung "all"
-    global_key = None
-    if "all" in keys_data:
-        try:
-            exp_all = datetime.fromisoformat(keys_data["all"]["expiration_date"])
-            if exp_all > datetime.now():
-                global_key = keys_data["all"]["key"].strip()
-        except:
-            pass
-
-    if global_key:
-        print(f"🔑 Key Free Chung từ server: {global_key}")
-        luu_thong_tin_device(device_id, global_key, exp_all)
-        remaining = exp_all - datetime.now()
-        print(f"⏳ Key còn hạn: {remaining.days} ngày")
-        return
-
-    # 2. Kiểm tra key riêng cho device
-    existing_key = None
-    exp_server = None
-    if device_id in keys_data:
-        try:
-            exp_server = datetime.fromisoformat(keys_data[device_id]['expiration_date'])
-            if exp_server > datetime.now():
-                existing_key = keys_data[device_id]['key'].strip()
-            else:
-                print("❌ Key server cho thiết bị này đã hết hạn.")
-                del keys_data[device_id]
-        except:
-            pass
-
-    if existing_key:
-        print(f"✅ Sử dụng key server cho thiết bị: {existing_key}")
-        luu_thong_tin_device(device_id, existing_key, exp_server)
-        remaining = exp_server - datetime.now()
-        print(f"⏳ Key còn hạn: {remaining.days} ngày")
-        return
-
-    # 3. Kiểm tra key local đã lưu trước đó
-    local_key = kiem_tra_device(device_id)
-    if local_key:
-        # Kiểm tra key local còn hợp lệ trên server
-        if device_id in keys_data and keys_data[device_id]['key'].strip() == local_key.strip():
-            exp_local = datetime.fromisoformat(keys_data[device_id]['expiration_date'])
-            if exp_local > datetime.now():
-                print(f"✅ Key hợp lệ từ file local: {local_key}")
-                remaining = exp_local - datetime.now()
-                print(f"⏳ Key còn hạn: {remaining.days} ngày")
-                return
-        print("❌ Key local đã bị thu hồi trên server.")
-        if os.path.exists('device_key.json'):
-            os.remove('device_key.json')
-
-    # 4. Nếu không có key nào, tạo key free mới
-    url, key, expiration_date = generate_free_key()
-    print("Nhập 1 để lấy key (Free)")
-    while True:
-        choice = input("Nhập lựa chọn: ").strip()
-        if choice == "1":
-            short_data = get_shortened_link_phu(url)
-            link_key = short_data.get('shortenedUrl') or url
-            print(f"Link lấy key: {link_key}")
-
-            while True:
-                keynhap = input("Nhập key đã nhận: ").strip()
-                if keynhap == key:
-                    print("✅ Key đúng — Mời bạn dùng Tool")
-                    luu_thong_tin_device(device_id, key, expiration_date)
-                    keys_data[device_id] = {
-                        "key": key,
-                        "expiration_date": expiration_date.isoformat()
-                    }
-                    github_update_keys(keys_data, message=f"Add key for {device_id}")
-                    return
-                else:
-                    print(f"❌ Key sai — Vui lòng nhập lại hoặc truy cập: {link_key}")
-        else:
-            print("Vui lòng nhập 1.")
-
-
-if __name__ == '__main__':
-    main()
-
-
-
 
 import os; import re; import getopt; import random; import pyzstd; from xml.dom import minidom; from colorama import Fore, Style; import sys; import shutil; import zipfile; import uuid; from collections import Counter; import xml.etree.ElementTree as ET; from collections import defaultdict; import os as O, binascii as X; from pathlib import Path; from random import randint; import datetime; import time; import struct; import hashlib; import json
 
@@ -383,10 +100,28 @@ def enc(path1=None):
 fixlag = '1'#input("\n>>> ")
 
 def process_input_numbers(numbers):
-    return numbers 
+    return numbers
 
-input_numbers = input('\n\t' + "ID: ")
-numbers = [int(num) for num in input_numbers.split()]
+if len(sys.argv) < 2:
+    print("Vui lòng nhập user_id làm tham số dòng lệnh")
+    sys.exit()
+
+user_id = sys.argv[1]
+
+# Tạo thư mục data/user_id nếu chưa có
+base_path = f"./{user_id}"
+os.makedirs(base_path, exist_ok=True)
+
+# Đường dẫn file selected_skin_id.txt riêng theo user
+selected_skin_path = os.path.join(base_path, "selected_skin_id.txt")
+
+if not os.path.exists(selected_skin_path):
+    print(f"File {selected_skin_path} không tồn tại")
+    sys.exit()
+
+with open(selected_skin_path, "r", encoding="utf-8") as f:
+    numbers = [int(line.strip()) for line in f if line.strip().isdigit()]
+
 results = process_input_numbers(numbers)
 if results is None:
     sys.exit()
@@ -456,7 +191,7 @@ for FolderMod in TENSKIN:
     aaabbbcccnnn = FolderMod
     ten_final = FolderMod
 
-FolderMod = f"Pack {len(DANHSACH)} Skin"
+FolderMod = f"{base_path}/FOLDERMOD/Pack {len(DANHSACH)} Skin"
 if not os.path.exists(FolderMod):
     os.makedirs(FolderMod)
 with open(os.path.join(FolderMod, 'SkinListMod.txt'), 'w', encoding='utf-8') as f:
@@ -2033,20 +1768,7 @@ b'\x0a\x00\x00\x0011620\x2ejpg',
                     rpl = f.read().replace(b'<String name="prefabName" value="Prefab_Skill_Effects/Hero_Skill_Effects/599_LvMeng/5991_LvMeng_Shak_Mid" refParamName="" useRefParam="false" />',b'<String name="prefabName" value="Prefab_Skill_Effects/Hero_Skill_Effects/599_LvMeng/59901/5991_LvMeng_Shak_Mid" refParamName="" useRefParam="false" />').replace(b'<String name="prefabName" value="Prefab_Skill_Effects/Hero_Skill_Effects/599_LvMeng/5991_LvMeng_Shak" refParamName="" useRefParam="false" />',b'<String name="prefabName" value="Prefab_Skill_Effects/Hero_Skill_Effects/599_LvMeng/59901/5991_LvMeng_Shak" refParamName="" useRefParam="false" />')
                 with open(file_path, 'wb') as f:f.write(rpl)
 #---------------—------------———----------------
-            if IDMODSKIN == '59901' and 'S1.xml' in file_path:
-                with open(file_path, 'rb') as f:
-                    rpl = f.read().replace(b'</Action>',b'    <Track trackName="SetAnimationParamsTick0" eventType="SetAnimationParamsTick" guid="c2e40485-fa44-4c14-a09b-1d2e010bce50" enabled="true" useRefParam="false" refParamName="" r="0.000" g="0.000" b="0.000" execOnForceStopped="false" execOnActionCompleted="false" stopAfterLastEvent="true" SkinAvatarFilterType="11">\r\n      <Event eventName="SetAnimationParamsTick" time="0.000" isDuration="false" guid="d376c3bc-4c1d-4c28-8198-cfe33a7f29d2">\r\n        <TemplateObject name="targetId" objectName="self" id="0" isTemp="false" refParamName="" useRefParam="false" />\r\n        <Array name="boolNames" refParamName="" useRefParam="false" type="String">\r\n          <String value="Spell1_1_Start" />\r\n        </Array>\r\n        <Array name="boolValues" refParamName="" useRefParam="false" type="bool">\r\n          <bool value="true" />\r\n        </Array>\r\n      </Event>\r\n      <SkinOrAvatarList id="59998" />\r\n    </Track>\r\n    <Track trackName="SetAnimationParamsTick0" eventType="SetAnimationParamsTick" guid="1f2d81a7-47bc-4ba1-8ea4-3f8d6631872c" enabled="true" useRefParam="false" refParamName="" r="0.000" g="0.000" b="0.000" execOnForceStopped="false" execOnActionCompleted="false" stopAfterLastEvent="true" SkinAvatarFilterType="11">\r\n      <Event eventName="SetAnimationParamsTick" time="0.066" isDuration="false" guid="67735e55-debf-43ab-9854-0f65154bf4f8">\r\n        <TemplateObject name="targetId" objectName="self" id="0" isTemp="false" refParamName="" useRefParam="false" />\r\n        <Array name="boolNames" refParamName="" useRefParam="false" type="String">\r\n          <String value="Spell1_1_Start" />\r\n        </Array>\r\n        <Array name="boolValues" refParamName="" useRefParam="false" type="bool">\r\n          <bool value="false" />\r\n        </Array>\r\n      </Event>\r\n      <SkinOrAvatarList id="59998" />\r\n    </Track>\r\n    <Track trackName="PlayAnimDuration0" eventType="PlayAnimDuration" guid="f367f53c-2614-4451-8662-1d6c9abf8d19" enabled="true" useRefParam="false" refParamName="" r="0.000" g="0.000" b="0.000" execOnForceStopped="false" execOnActionCompleted="false" stopAfterLastEvent="true" OrConditions="true" SkinAvatarFilterType="11">\r\n      <Event eventName="PlayAnimDuration" time="0.000" length="1.000" isDuration="true" guid="96b1fc43-7446-4e66-ac22-d6617f0c1dde">\r\n        <TemplateObject name="targetId" objectName="self" id="0" isTemp="false" refParamName="" useRefParam="false" />\r\n        <String name="clipName" value="Spell1_11" refParamName="" useRefParam="false" />\r\n        <int name="layer" value="3" refParamName="" useRefParam="false" />\r\n        <float name="endTime" value="999999.000" refParamName="" useRefParam="false" />\r\n      </Event>\r\n      <SkinOrAvatarList id="59998" />\r\n    </Track>\r\n  </Action>')
-                with open(file_path, 'wb') as f:
-                    f.write(rpl)
-#---------------—------------———----------------
-            if IDMODSKIN[:3] == '111':
-                with open(file_path, 'rb') as f:
-                    rpl = f.read().replace(
-                    b'<String name="prefabName" value="prefab_skill_effects/hero_skill_effects/111_sunshangxiang/sunshangxiang',
-                    b'<String name="prefabName" value="prefab_skill_effects/hero_skill_effects/111_sunshangxiang/'+IDMODSKIN+b'/sunshangxiang'
-        )
-                with open(file_path, 'wb') as f:
-                    f.write(rpl)
+
 #---------------—------------———----------------
             if IDMODSKIN == '11107' and 'death.xml' not in file_path.lower():
                 with open(file_path, 'rb') as f:
@@ -2618,7 +2340,7 @@ b'        <int name="changeSkillID" value="13700" refParamName="" useRefParam="f
                     f.write(rpl)
                     
 #-----------------------------------------------
-    IDNODMODCHECK = ['13210', '13011', '52414', '15015', '15013', '13314', '13706','59901','13213','11215','59802','10915','15412','10611','10620','11120', '15710']
+    IDNODMODCHECK = ['13210', '13011', '52414', '15015', '15013', '13314', '13706','59901','13213','11215','59802','10915','15412','10611','10620','11120']
     
     if IDCHECK not in IDNODMODCHECK:
         directorypath = Files_Directory_Path + f'{NAME_HERO}' + '/skill/'
@@ -2752,8 +2474,8 @@ b'        <int name="changeSkillID" value="13700" refParamName="" useRefParam="f
                 remove_extra_skin_array_in_folder(directory_path)
 
     # fix ef pro
-    VMODCHECK = '2'
-    MODCHECK = '1'
+    VMODCHECK = '3'
+    MODCHECK = '3'
     if MODCHECK == '1':
         IDNODMODCHECK = ['14111', '13210', '16707', '13011','13213','10620']
         #IDCHECK = IDCHECK[:3]+'00'
@@ -2915,43 +2637,39 @@ b'        <int name="skinId" value="' + IDCHECK.encode() + b'" refParamName="" u
                 All = All.replace(b'14100',b'14111')
             with open(File_Check_Code, "wb") as f:
                 f.write(All)
-
         if IDCHECK == '59802':
             with open(File_Check_Code, "rb") as f:
                 All = f.read()
-        
-            tracks = re.findall(rb'(<Track trackName=".*?</Track>)', All, flags=re.DOTALL)
-        
-            for t in tracks:
-                t_low = t.lower()
-                if b"random" in t_low or b"spawnobjectduration" in t_low or b"spawnbullettick" in t_low or b"filtertargettype" in t_low or b"checkenergyconditionduration0" in t_low or b"setmaterialparamsduration" in t_low or b"setactorhudscaleduration0" in t_low or b"hittriggertick0" in t_low or b"removebufftick0" in t_low or b"stoptrack" in t_low:
-
-                    continue
-                All = All.replace(t, t.replace(b'<SkinOrAvatarList id="59802" />',
-                                               b'<SkinOrAvatarList id="59898" />'))
-        
+            
+            pattern = rb'(<Track trackName=".*?</Track>)'
+            
+            matches = re.findall(pattern, All, flags=re.DOTALL)
+            for track_content in matches:
+                if b"random" in track_content.lower() or b"spawnobjectduration" in track_content.lower() or b'SpawnBulletTick' in track_content.lower() or b'FilterTargetType' in track_content.lower() or b'CheckEnergyConditionDuration0' or b'SetMaterialParamsDuration' in track_content.lower() or b'SetActorHudScaleDuration0' in track_content.lower():
+                    continue  # Track này giữ nguyên
+                if b'<SkinOrAvatarList id="59802" />' in track_content:
+                    new_track = track_content.replace(
+                            b'<SkinOrAvatarList id="59802" />',
+                            b'<SkinOrAvatarList id="59898" />'
+                        )
+                    All = All.replace(track_content, new_track)
+            
             with open(File_Check_Code, "wb") as f:
                 f.write(All)
-
-        if IDCHECK == '59901' and file not in ['Back.xml', 'P10E2.xml', 'S1B1.xml']:
+            
+        if IDCHECK == '59901':
             with open(File_Check_Code, "rb") as f:
                 All = f.read()
         
             for track in re.findall(rb'(<Track trackName=".*?</Track>)', All, flags=re.DOTALL):
                 l = track.lower()
-                if (b"random" in l or b'scalemeshduration0' in l or b'hittrigger' in l or b'spawnobjectduration' in l or b'spawnbullettick' in l or b'removebufftick' in l or b'setcollisiontick' in l):
+                if b"random" in l or b'scalemeshduration0' in l or b'hittriggertick0" eventtype="hittriggertick" guid="12d7aef8-3082-4aba-' in l or b'spawnobjectduration' in l or b'spawnbullettick' in l:
                     continue
-                new_track = re.sub(
-                    rb'<SkinOrAvatarList id="59901"\s*/>',
-                    b'<SkinOrAvatarList id="59998" />',
-                    track
-                )
-        
+                new_track = b'\n'.join(line for line in track.splitlines() if b"SkinOrAvatar" not in line)
                 All = All.replace(track, new_track)
         
             with open(File_Check_Code, "wb") as f:
                 f.write(All)
-        
         if IDCHECK == '13706' and 'U1B0.xml' in file:
             with open(File_Check_Code, 'rb') as f:
                 rpl = f.read()
@@ -3516,6 +3234,7 @@ b'        <int name="skinId" value="' + IDCHECK.encode() + b'" refParamName="" u
     if IDMODSKIN == '15710':
         SceneBUFF02 = f'{FolderMod}/Resources/{Ver}/Ages/Prefab_Characters/Prefab_Hero/mod1/commonresource/SceneBUFF02.xml'
         giai(SceneBUFF02)
+    
         remove_lines = [
             b'<bool name="bSkipLogicCheck" value="true" refParamName="" useRefParam="false" />',
             b'<bool name="bEqual" value="false" refParamName="" useRefParam="false" />'
@@ -3523,28 +3242,21 @@ b'        <int name="skinId" value="' + IDCHECK.encode() + b'" refParamName="" u
     
         with open(SceneBUFF02, 'rb') as f:
             lines = f.readlines()
-        
+    
         new_lines = []
         count = 0
         for line in lines:
             line = line.replace(b"CheckSkinIdTick", b"CheckHeroIdTick")
-            
-            line = line.replace(
-                f'skinId" value="{IDCHECK}"'.encode('utf-8'), 
-                f'heroId" value="{IDCHECK[:3]}"'.encode('utf-8')
-            )
-        
+            line = line.replace(f'skinId" value="{IDCHECK}"'.encode(), f'heroId" value="{IDCHECK[:3]}"'.encode())
+    
             if b'prefab_skill_effects/common_effects/jiasu_tongyong_01' in line:
                 count += 1
                 if count == 2:
-                    new_path = f"prefab_skill_effects/hero_skill_effects/{NAME_HERO}/{IDCHECK}/jiasu_tongyong_01".encode('utf-8')
-                    line = line.replace(
-                        b'prefab_skill_effects/common_effects/jiasu_tongyong_01',
-                        new_path
-                    )
-        
+                    line = line.replace(b'prefab_skill_effects/common_effects/jiasu_tongyong_01', f"prefab_skill_effects/hero_skill_effects/{NAME_HERO}/{IDCHECK}/jiasu_tongyong_01")
+    
             if line.strip() not in remove_lines:
                 new_lines.append(line)
+    
         with open(SceneBUFF02, 'wb') as f:
             f.writelines(new_lines)
 #-----------------------------------------------
@@ -4332,3 +4044,15 @@ with zipfile.ZipFile(f"{FolderMod}/Resources/{Ver}/Ages/Prefab_Characters/Prefab
 shutil.rmtree(f"{FolderMod}/Resources/{Ver}/Ages/Prefab_Characters/Prefab_Hero/mod1")
 shutil.rmtree("mod5", ignore_errors=True)
 #-----------------------------------------------
+output_zip = f"{FolderMod}.zip"
+
+def zip_folder(folder_path, output_path):
+    with zipfile.ZipFile(output_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+        for root, dirs, files in os.walk(folder_path):
+            for file in files:
+                file_path = os.path.join(root, file)
+                arcname = os.path.relpath(file_path, start=folder_path)
+                zipf.write(file_path, arcname)
+
+zip_folder(FolderMod, output_zip)
+print(f"Đã nén thành công: {output_zip}")
